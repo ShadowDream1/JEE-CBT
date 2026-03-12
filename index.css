@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+/* Simple theme overrides for dark mode */
+.theme-dark {
+  background-color: #0b1220;
+  color: #e2e8f0;
+}
+.theme-dark .bg-white {
+  background-color: #0f172a !important;
+  color: #e2e8f0 !important;
+}
+.theme-dark .bg-gray-50 {
+  background-color: #111827 !important;
+  color: #e2e8f0 !important;
+}
+.theme-dark .bg-gray-100 {
+  background-color: #0b1220 !important;
+  color: #e2e8f0 !important;
+}
+.theme-dark .text-gray-800,
+.theme-dark .text-gray-700,
+.theme-dark .text-gray-600,
+.theme-dark .text-gray-500 {
+  color: #cbd5e1 !important;
+}
+.theme-dark .border,
+.theme-dark .border-b,
+.theme-dark .border-t,
+.theme-dark .border-l,
+.theme-dark .border-r,
+.theme-dark .border-gray-300 {
+  border-color: #334155 !important;
+}
+.theme-dark .shadow-md,
+.theme-dark .shadow-lg,
+.theme-dark .shadow-xl {
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.12), 0 8px 24px rgba(2, 6, 23, 0.6) !important;
+}
