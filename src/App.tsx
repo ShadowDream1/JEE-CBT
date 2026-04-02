@@ -100,7 +100,7 @@ export default function App() {
           Extract ALL questions from the PDF (typically 50 to 90 questions for a full JEE paper). Do not limit the output.`;
 
           const response = await ai.models.generateContent({
-            model: 'gemini-1.5-pro',
+            model: 'gemini-1.5-flash',
             contents: [
               {
                 inlineData: {
