@@ -4,6 +4,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { Upload, FileText, Settings, Play, CheckCircle, Circle, ArrowRight, ArrowLeft, Bookmark, Info, User, Moon, Sun } from 'lucide-react';
 import clsx from 'clsx';
+import { GoogleGenAI, Type } from '@google/genai';
+
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 type QuestionType = 'SINGLE_CORRECT' | 'MULTIPLE_CORRECT' | 'NUMERICAL' | 'MATRIX_MATCH';
@@ -56,10 +58,10 @@ export default function App() {
       } catch (e) { }
     }
 
-    const savedApiKey = localStorage.getItem('nvidia_api_key');
+    const savedApiKey = localStorage.getItem('gemini_api_key');
     if (savedApiKey) {
       setApiKey(savedApiKey);
-    } else if (!(import.meta as any).env.VITE_NVIDIA_API_KEY && !process.env.NVIDIA_API_KEY) {
+    } else if (!(import.meta as any).env.VITE_GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
       setShowApiKeyPrompt(true);
     }
 
@@ -78,91 +80,71 @@ export default function App() {
 
     try {
       const fileReader = new FileReader();
-      fileReader.onload = async function() {
+      fileReader.onload = async function () {
         try {
-          setProcessingProgress(20);
+          setProcessingProgress(30);
+          const base64Data = (this.result as string).split(',')[1];
           
-          const typedarray = new Uint8Array(this.result as ArrayBuffer);
-          const pdfToProcess = await pdfjsLib.getDocument(typedarray).promise;
+          const ai = new GoogleGenAI({ apiKey: apiKey || (import.meta as any).env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
           
-          setProcessingProgress(40);
-          const contentArray: any[] = [];
-          
-          for (let i = 1; i <= pdfToProcess.numPages; i++) {
-            const page = await pdfToProcess.getPage(i);
-            const viewport = page.getViewport({ scale: 1.5 }); // Ensure it's legible but not too heavy
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            if (context) {
-              canvas.width = viewport.width;
-              canvas.height = viewport.height;
-              // @ts-ignore
-              await page.render({ canvasContext: context, viewport }).promise;
-              const base64Img = canvas.toDataURL('image/jpeg');
-              
-              contentArray.push({
-                type: 'image_url',
-                image_url: { url: base64Img }
-              });
-            }
-          }
-          
-          setProcessingProgress(60);
-          
+          setProcessingProgress(50);
           const prompt = `Analyze this JEE Mock Test PDF. 
           First, look at the first few pages for any General Instructions or Marking Scheme. Use this to understand the structure if available.
           Extract the correct answer for every question from the answer key at the end. 
-          Then, go through the PDF page by page. For every question, determine the exact bounding boxes (page, ymin, ymax) that contain the question text, options, and any associated comprehension paragraph or diagrams. 
-          
-          CRITICAL INSTRUCTIONS FOR BOUNDING BOXES (ymin, ymax):
-          - Use a normalized coordinate system from 0 to 1000 (0 is top, 1000 is bottom).
-          - You MUST include the ENTIRE question text, ANY diagrams, and ALL options (A, B, C, D) in the bounding box.
-          - DO NOT cut off the bottom options. Carefully set 'ymax' to capture the very last option (usually D) completely.
-          - DO NOT include text from the previous or next question. Ensure 'ymin' starts exactly at the beginning of the current question.
-          - If a question spans multiple pages, include multiple boxes in the 'boxes' array.
-          - Add a safe padding of around 15-20 units to both ymin and ymax to ensure no text is clipped.
-          
+          Then, go through the PDF page by page. For every question, determine the exact bounding boxes (page, ymin, ymax) that contain the question text, options, and any associated comprehension paragraph or diagrams. If a question spans multiple pages or has a separate comprehension paragraph, include multiple boxes in the 'boxes' array. Make sure the cropping is tight but do not cut off any text. Add a small padding to ymin and ymax to ensure the entire question and options are fully visible. EVERY question MUST have at least one box in the 'boxes' array.
+          Use a normalized coordinate system from 0 to 1000 (where 0 is the top of the page and 1000 is the bottom).
           Identify the subject (Physics, Chemistry, Mathematics).
-          Identify the section name exactly as written in the PDF.
-          Identify the question type: 'SINGLE_CORRECT', 'MULTIPLE_CORRECT', 'NUMERICAL', or 'MATRIX_MATCH'.
-          Output a JSON array of objects. Extract ALL questions from the PDF.`;
+          Identify the section name exactly as written in the PDF (e.g., "SECTION-I (i)", "SECTION-II").
+          Identify the question type: 'SINGLE_CORRECT' (one option correct), 'MULTIPLE_CORRECT' (one or more options correct), 'NUMERICAL' (integer or decimal value), or 'MATRIX_MATCH' (matching lists).
+          Output a JSON array of objects.
+          Extract ALL questions from the PDF (typically 50 to 90 questions for a full JEE paper). Do not limit the output.`;
 
-          contentArray.unshift({ type: "text", text: prompt });
-
-          const activeApiKey = apiKey || (import.meta as any).env.VITE_NVIDIA_API_KEY || process.env.NVIDIA_API_KEY;
-
-          const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${activeApiKey}`,
-              'Content-Type': 'application/json',
-              'Accept': 'application/json'
-            },
-            body: JSON.stringify({
-              model: "mistralai/mistral-large-3-675b-instruct-2512",
-              messages: [
-                {
-                  role: "user",
-                  content: contentArray
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: [
+              {
+                inlineData: {
+                  data: base64Data,
+                  mimeType: 'application/pdf'
                 }
-              ],
-              max_tokens: 4096,
-              temperature: 0.15,
-              response_format: { type: "json_object" }
-            })
+              },
+              prompt
+            ],
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    questionNumber: { type: Type.INTEGER },
+                    subject: { type: Type.STRING },
+                    section: { type: Type.STRING },
+                    boxes: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          page: { type: Type.INTEGER },
+                          ymin: { type: Type.INTEGER },
+                          ymax: { type: Type.INTEGER }
+                        },
+                        required: ["page", "ymin", "ymax"]
+                      }
+                    },
+                    answer: { type: Type.STRING },
+                    type: { type: Type.STRING }
+                  },
+                  required: ["questionNumber", "subject", "section", "boxes", "answer", "type"]
+                }
+              }
+            }
           });
 
           setProcessingProgress(80);
-          
-          if (!response.ok) {
-            const errorData = await response.text();
-            throw new Error(`API returned ${response.status}: ${errorData}`);
-          }
-
-          const responseData = await response.json();
-          let jsonStr = responseData.choices[0]?.message?.content || '';
-          if (jsonStr.startsWith('```json')) {
-            jsonStr = jsonStr.replace(/^\`\`\`json\n?/, '').replace(/\n?\`\`\`$/, '');
+          const jsonStr = response.text;
+          if (!jsonStr) {
+            throw new Error('Failed to parse PDF');
           }
           const questions = JSON.parse(jsonStr);
 
@@ -665,7 +647,7 @@ export default function App() {
 
             <button
               onClick={isReady ? startTest : processPdf}
-              disabled={!pdfFile || isProcessing || (!apiKey && !(import.meta as any).env.VITE_NVIDIA_API_KEY && !process.env.NVIDIA_API_KEY)}
+              disabled={!pdfFile || isProcessing || (!apiKey && !(import.meta as any).env.VITE_GEMINI_API_KEY && !process.env.GEMINI_API_KEY)}
               className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {isProcessing ? (
@@ -683,7 +665,7 @@ export default function App() {
             </button>
             <div className="mt-3 flex items-center justify-center gap-3 text-xs text-gray-600">
               <span>
-                API Key: {apiKey ? 'Saved in browser' : (import.meta as any).env.VITE_NVIDIA_API_KEY || process.env.NVIDIA_API_KEY ? 'Loaded from .env' : 'Not set'}
+                API Key: {apiKey ? 'Saved in browser' : (import.meta as any).env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY ? 'Loaded from .env' : 'Not set'}
               </span>
               <button
                 onClick={() => setShowApiKeyPrompt(true)}
@@ -693,7 +675,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
-                  localStorage.removeItem('nvidia_api_key');
+                  localStorage.removeItem('gemini_api_key');
                   setApiKey('');
                 }}
                 className="text-red-600 hover:underline"
@@ -724,9 +706,9 @@ export default function App() {
         {showApiKeyPrompt && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
-              <h3 className="text-xl font-bold mb-2 text-gray-800">Enter NVIDIA API Key</h3>
+              <h3 className="text-xl font-bold mb-2 text-gray-800">Enter Gemini API Key</h3>
               <p className="text-sm text-gray-600 mb-4">
-                To process PDFs, you need an NVIDIA NIM API key. It will be saved locally in your browser.
+                To process PDFs, you need a Google Gemini API key. It will be saved locally in your browser.
               </p>
               <input
                 type="password"
@@ -745,7 +727,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     if (apiKey.trim()) {
-                      localStorage.setItem('nvidia_api_key', apiKey.trim());
+                      localStorage.setItem('gemini_api_key', apiKey.trim());
                       setShowApiKeyPrompt(false);
                     }
                   }}
