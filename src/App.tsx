@@ -5,7 +5,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { Upload, FileText, Settings, Play, CheckCircle, Circle, ArrowRight, ArrowLeft, Bookmark, Info, User, Moon, Sun } from 'lucide-react';
 import clsx from 'clsx';
 import { GoogleGenAI, Type } from '@google/genai';
-
+  
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 type QuestionType = 'SINGLE_CORRECT' | 'MULTIPLE_CORRECT' | 'NUMERICAL' | 'MATRIX_MATCH';
@@ -91,16 +91,23 @@ export default function App() {
           const prompt = `Analyze this JEE Mock Test PDF. 
           First, look at the first few pages for any General Instructions or Marking Scheme. Use this to understand the structure if available.
           Extract the correct answer for every question from the answer key at the end. 
-          Then, go through the PDF page by page. For every question, determine the exact bounding boxes (page, ymin, ymax) that contain the question text, options, and any associated comprehension paragraph or diagrams. If a question spans multiple pages or has a separate comprehension paragraph, include multiple boxes in the 'boxes' array. Make sure the cropping is tight but do not cut off any text. Add a small padding to ymin and ymax to ensure the entire question and options are fully visible. EVERY question MUST have at least one box in the 'boxes' array.
-          Use a normalized coordinate system from 0 to 1000 (where 0 is the top of the page and 1000 is the bottom).
+          Then, go through the PDF page by page. For every question, determine the exact bounding boxes (page, ymin, ymax) that contain the question text, options, and any associated comprehension paragraph or diagrams. 
+          
+          CRITICAL INSTRUCTIONS FOR BOUNDING BOXES (ymin, ymax):
+          - Use a normalized coordinate system from 0 to 1000 (0 is top, 1000 is bottom).
+          - You MUST include the ENTIRE question text, ANY diagrams, and ALL options (A, B, C, D) in the bounding box.
+          - DO NOT cut off the bottom options. Carefully set 'ymax' to capture the very last option (usually D) completely.
+          - DO NOT include text from the previous or next question. Ensure 'ymin' starts exactly at the beginning of the current question.
+          - If a question spans multiple pages, include multiple boxes in the 'boxes' array.
+          - Add a safe padding of around 15-20 units to both ymin and ymax to ensure no text is clipped.
+          
           Identify the subject (Physics, Chemistry, Mathematics).
-          Identify the section name exactly as written in the PDF (e.g., "SECTION-I (i)", "SECTION-II").
-          Identify the question type: 'SINGLE_CORRECT' (one option correct), 'MULTIPLE_CORRECT' (one or more options correct), 'NUMERICAL' (integer or decimal value), or 'MATRIX_MATCH' (matching lists).
-          Output a JSON array of objects.
-          Extract ALL questions from the PDF (typically 50 to 90 questions for a full JEE paper). Do not limit the output.`;
+          Identify the section name exactly as written in the PDF.
+          Identify the question type: 'SINGLE_CORRECT', 'MULTIPLE_CORRECT', 'NUMERICAL', or 'MATRIX_MATCH'.
+          Output a JSON array of objects. Extract ALL questions from the PDF.`;
 
           const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.5-pro',
             contents: [
               {
                 inlineData: {
