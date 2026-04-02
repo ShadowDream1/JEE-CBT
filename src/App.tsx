@@ -188,7 +188,7 @@ export default function App() {
           setProcessingProgress(0);
         }
       };
-      fileReader.readAsArrayBuffer(pdfFile);
+      fileReader.readAsDataURL(pdfFile);
     } catch (err: any) {
       console.error(err);
       alert(`Error processing PDF: ${err.message || 'Please try again.'}`);
