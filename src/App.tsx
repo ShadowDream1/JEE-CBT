@@ -4,8 +4,6 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { Upload, FileText, Settings, Play, CheckCircle, Circle, ArrowRight, ArrowLeft, Bookmark, Info, User, Moon, Sun } from 'lucide-react';
 import clsx from 'clsx';
-import { GoogleGenAI, Type } from '@google/genai';
-  
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 type QuestionType = 'SINGLE_CORRECT' | 'MULTIPLE_CORRECT' | 'NUMERICAL' | 'MATRIX_MATCH';
@@ -55,13 +53,13 @@ export default function App() {
     if (history) {
       try {
         setTestHistory(JSON.parse(history));
-      } catch (e) {}
+      } catch (e) { }
     }
-    
-    const savedApiKey = localStorage.getItem('gemini_api_key');
+
+    const savedApiKey = localStorage.getItem('nvidia_api_key');
     if (savedApiKey) {
       setApiKey(savedApiKey);
-    } else if (!(import.meta as any).env.VITE_GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
+    } else if (!(import.meta as any).env.VITE_NVIDIA_API_KEY && !process.env.NVIDIA_API_KEY) {
       setShowApiKeyPrompt(true);
     }
 
@@ -82,12 +80,35 @@ export default function App() {
       const fileReader = new FileReader();
       fileReader.onload = async function() {
         try {
-          setProcessingProgress(30);
-          const base64Data = (this.result as string).split(',')[1];
+          setProcessingProgress(20);
           
-          const ai = new GoogleGenAI({ apiKey: apiKey || (import.meta as any).env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY });
+          const typedarray = new Uint8Array(this.result as ArrayBuffer);
+          const pdfToProcess = await pdfjsLib.getDocument(typedarray).promise;
           
-          setProcessingProgress(50);
+          setProcessingProgress(40);
+          const contentArray: any[] = [];
+          
+          for (let i = 1; i <= pdfToProcess.numPages; i++) {
+            const page = await pdfToProcess.getPage(i);
+            const viewport = page.getViewport({ scale: 1.5 }); // Ensure it's legible but not too heavy
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (context) {
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              // @ts-ignore
+              await page.render({ canvasContext: context, viewport }).promise;
+              const base64Img = canvas.toDataURL('image/jpeg');
+              
+              contentArray.push({
+                type: 'image_url',
+                image_url: { url: base64Img }
+              });
+            }
+          }
+          
+          setProcessingProgress(60);
+          
           const prompt = `Analyze this JEE Mock Test PDF. 
           First, look at the first few pages for any General Instructions or Marking Scheme. Use this to understand the structure if available.
           Extract the correct answer for every question from the answer key at the end. 
@@ -106,55 +127,45 @@ export default function App() {
           Identify the question type: 'SINGLE_CORRECT', 'MULTIPLE_CORRECT', 'NUMERICAL', or 'MATRIX_MATCH'.
           Output a JSON array of objects. Extract ALL questions from the PDF.`;
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
-            contents: [
-              {
-                inlineData: {
-                  data: base64Data,
-                  mimeType: 'application/pdf'
+          contentArray.unshift({ type: "text", text: prompt });
+
+          const activeApiKey = apiKey || (import.meta as any).env.VITE_NVIDIA_API_KEY || process.env.NVIDIA_API_KEY;
+
+          const response = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${activeApiKey}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+              model: "mistralai/mistral-large-3-675b-instruct-2512",
+              messages: [
+                {
+                  role: "user",
+                  content: contentArray
                 }
-              },
-              prompt
-            ],
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    questionNumber: { type: Type.INTEGER },
-                    subject: { type: Type.STRING },
-                    section: { type: Type.STRING },
-                    boxes: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          page: { type: Type.INTEGER },
-                          ymin: { type: Type.INTEGER },
-                          ymax: { type: Type.INTEGER }
-                        },
-                        required: ["page", "ymin", "ymax"]
-                      }
-                    },
-                    answer: { type: Type.STRING },
-                    type: { type: Type.STRING }
-                  },
-                  required: ["questionNumber", "subject", "section", "boxes", "answer", "type"]
-                }
-              }
-            }
+              ],
+              max_tokens: 4096,
+              temperature: 0.15,
+              response_format: { type: "json_object" }
+            })
           });
 
           setProcessingProgress(80);
-          const jsonStr = response.text;
-          if (!jsonStr) {
-            throw new Error('Failed to parse PDF');
+          
+          if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`API returned ${response.status}: ${errorData}`);
+          }
+
+          const responseData = await response.json();
+          let jsonStr = responseData.choices[0]?.message?.content || '';
+          if (jsonStr.startsWith('```json')) {
+            jsonStr = jsonStr.replace(/^\`\`\`json\n?/, '').replace(/\n?\`\`\`$/, '');
           }
           const questions = JSON.parse(jsonStr);
-          
+
           if (questions && questions.length > 0) {
             // Sort by page and ymin to ensure PDF order
             const sorted = questions.sort((a: any, b: any) => {
@@ -163,17 +174,17 @@ export default function App() {
               if (boxA.page !== boxB.page) return boxA.page - boxB.page;
               return boxA.ymin - boxB.ymin;
             });
-            
+
             // Add unique ID and continuous question number
             const withIds = sorted.map((q: any, index: number) => ({
               ...q,
               questionNumber: index + 1,
               id: `q-${index + 1}`
             }));
-            
+
             setQuestions(withIds);
             setCurrentSubject(withIds[0].subject);
-            
+
             // Initialize responses
             const initialResponses: Record<string, UserResponse> = {};
             withIds.forEach((q: any) => {
@@ -181,7 +192,7 @@ export default function App() {
             });
             initialResponses[withIds[0].id].status = 'NOT_ANSWERED';
             setResponses(initialResponses);
-            
+
             setProcessingProgress(100);
             setIsReady(true);
           } else {
@@ -195,7 +206,7 @@ export default function App() {
           setProcessingProgress(0);
         }
       };
-      fileReader.readAsDataURL(pdfFile);
+      fileReader.readAsArrayBuffer(pdfFile);
     } catch (err: any) {
       console.error(err);
       alert(`Error processing PDF: ${err.message || 'Please try again.'}`);
@@ -214,14 +225,14 @@ export default function App() {
   const [timeLeft, setTimeLeft] = useState(180 * 60); // 3 hours
   const [currentSubject, setCurrentSubject] = useState<string>('');
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
-  
+
   const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   // Load PDF when file is selected
   useEffect(() => {
     if (pdfFile) {
       const fileReader = new FileReader();
-      fileReader.onload = async function() {
+      fileReader.onload = async function () {
         const typedarray = new Uint8Array(this.result as ArrayBuffer);
         const pdf = await pdfjsLib.getDocument(typedarray).promise;
         setPdfDoc(pdf);
@@ -242,7 +253,7 @@ export default function App() {
           }
           return prev - 1;
         });
-        
+
         // Update time spent on current question
         if (questions.length > 0) {
           const currentQ = questions[currentQuestionIndex];
@@ -270,7 +281,7 @@ export default function App() {
 
   const renderQuestionImage = async () => {
     if (!pdfDoc || !canvasContainerRef.current || questions.length === 0) return;
-    
+
     const q = questions[currentQuestionIndex];
     if (!q) return;
 
@@ -285,16 +296,16 @@ export default function App() {
       for (const box of q.boxes) {
         const page = await pdfDoc.getPage(box.page);
         const viewport = page.getViewport({ scale: 2.0 });
-        
+
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         if (!context) continue;
-        
+
         canvas.height = viewport.height;
         canvas.width = viewport.width;
-        
+
         await page.render({ canvasContext: context, viewport }).promise;
-        
+
         const targetCanvas = document.createElement('canvas');
         targetCanvas.className = "max-w-full h-auto mx-auto mb-4";
         targetCanvas.style.width = '100%';
@@ -313,7 +324,7 @@ export default function App() {
           0, yStart, canvas.width, cropHeight,
           0, 0, targetCanvas.width, cropHeight
         );
-        
+
         container.appendChild(targetCanvas);
       }
     } catch (err) {
@@ -338,17 +349,17 @@ export default function App() {
       { id: "demo-6", questionNumber: 6, subject: "Mathematics", section: "SECTION-I (i)", boxes: [{ page: 3, ymin: 100, ymax: 500 }], answer: "B", type: "SINGLE_CORRECT" },
       { id: "demo-7", questionNumber: 7, subject: "Mathematics", section: "SECTION-II", boxes: [{ page: 3, ymin: 500, ymax: 900 }], answer: "42.50", type: "NUMERICAL" },
     ];
-    
+
     setQuestions(demoQuestions);
     setCurrentSubject(demoQuestions[0].subject);
-    
+
     const initialResponses: Record<string, UserResponse> = {};
     demoQuestions.forEach((q) => {
       initialResponses[q.id] = { answer: '', status: 'NOT_VISITED', timeSpent: 0 };
     });
     initialResponses[demoQuestions[0].id].status = 'NOT_ANSWERED';
     setResponses(initialResponses);
-    
+
     setStep('TEST');
   };
 
@@ -363,7 +374,7 @@ export default function App() {
   const saveAndNext = () => {
     const q = questions[currentQuestionIndex];
     const currentRes = responses[q.id];
-    
+
     setResponses(prev => ({
       ...prev,
       [q.id]: {
@@ -371,14 +382,14 @@ export default function App() {
         status: currentRes.answer ? 'ANSWERED' : 'NOT_ANSWERED'
       }
     }));
-    
+
     goToNextQuestion();
   };
 
   const markForReviewAndNext = () => {
     const q = questions[currentQuestionIndex];
     const currentRes = responses[q.id];
-    
+
     setResponses(prev => ({
       ...prev,
       [q.id]: {
@@ -386,7 +397,7 @@ export default function App() {
         status: currentRes.answer ? 'ANSWERED_AND_MARKED' : 'MARKED_FOR_REVIEW'
       }
     }));
-    
+
     goToNextQuestion();
   };
 
@@ -403,7 +414,7 @@ export default function App() {
       const nextQ = questions[currentQuestionIndex + 1];
       setCurrentQuestionIndex(currentQuestionIndex + 1);
       setCurrentSubject(nextQ.subject);
-      
+
       if (responses[nextQ.id].status === 'NOT_VISITED') {
         setResponses(prev => ({
           ...prev,
@@ -416,14 +427,14 @@ export default function App() {
   const jumpToQuestion = (index: number) => {
     const q = questions[currentQuestionIndex];
     const currentRes = responses[q.id];
-    
+
     // Save current state before jumping
     setResponses(prev => ({
       ...prev,
       [q.id]: {
         ...prev[q.id],
-        status: prev[q.id].status === 'NOT_VISITED' || prev[q.id].status === 'NOT_ANSWERED' 
-          ? (currentRes.answer ? 'ANSWERED' : 'NOT_ANSWERED') 
+        status: prev[q.id].status === 'NOT_VISITED' || prev[q.id].status === 'NOT_ANSWERED'
+          ? (currentRes.answer ? 'ANSWERED' : 'NOT_ANSWERED')
           : prev[q.id].status
       }
     }));
@@ -431,7 +442,7 @@ export default function App() {
     const nextQ = questions[index];
     setCurrentQuestionIndex(index);
     setCurrentSubject(nextQ.subject);
-    
+
     if (responses[nextQ.id].status === 'NOT_VISITED') {
       setResponses(prev => ({
         ...prev,
@@ -460,7 +471,7 @@ export default function App() {
           questionScores[q.id] = 0;
           return;
         }
-        
+
         let isCorrect = false;
         let isPartial = false;
         let partialScore = 0;
@@ -553,7 +564,7 @@ export default function App() {
 
   const confirmSubmit = () => {
     setShowSubmitConfirm(false);
-    
+
     const { score, correct, incorrect, unattempted } = calculateScore();
 
     const newHistory = [
@@ -570,7 +581,7 @@ export default function App() {
     ];
     setTestHistory(newHistory);
     localStorage.setItem('jee_test_history', JSON.stringify(newHistory));
-    
+
     setStep('RESULT');
   };
 
@@ -606,7 +617,7 @@ export default function App() {
             <h1 className="text-2xl font-bold">JEE CBT Simulator</h1>
             <p className="text-blue-100 mt-2">Upload a mock test PDF to begin</p>
           </div>
-          
+
           <div className="p-6 space-y-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Test Type</label>
@@ -654,7 +665,7 @@ export default function App() {
 
             <button
               onClick={isReady ? startTest : processPdf}
-              disabled={!pdfFile || isProcessing || (!apiKey && !(import.meta as any).env.VITE_GEMINI_API_KEY && !process.env.GEMINI_API_KEY)}
+              disabled={!pdfFile || isProcessing || (!apiKey && !(import.meta as any).env.VITE_NVIDIA_API_KEY && !process.env.NVIDIA_API_KEY)}
               className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {isProcessing ? (
@@ -672,7 +683,7 @@ export default function App() {
             </button>
             <div className="mt-3 flex items-center justify-center gap-3 text-xs text-gray-600">
               <span>
-                API Key: {apiKey ? 'Saved in browser' : (import.meta as any).env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY ? 'Loaded from .env' : 'Not set'}
+                API Key: {apiKey ? 'Saved in browser' : (import.meta as any).env.VITE_NVIDIA_API_KEY || process.env.NVIDIA_API_KEY ? 'Loaded from .env' : 'Not set'}
               </span>
               <button
                 onClick={() => setShowApiKeyPrompt(true)}
@@ -682,7 +693,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
-                  localStorage.removeItem('gemini_api_key');
+                  localStorage.removeItem('nvidia_api_key');
                   setApiKey('');
                 }}
                 className="text-red-600 hover:underline"
@@ -694,10 +705,10 @@ export default function App() {
               <button onClick={startDemoTest} className="text-sm text-blue-600 hover:underline">
                 Or try Demo Mode (No PDF required)
               </button>
-              
+
               {testHistory.length > 0 && (
                 <div>
-                  <button 
+                  <button
                     onClick={() => setStep('HISTORY')}
                     className="text-sm text-gray-600 hover:text-gray-800 font-medium inline-flex items-center"
                   >
@@ -713,9 +724,9 @@ export default function App() {
         {showApiKeyPrompt && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
-              <h3 className="text-xl font-bold mb-2 text-gray-800">Enter Gemini API Key</h3>
+              <h3 className="text-xl font-bold mb-2 text-gray-800">Enter NVIDIA API Key</h3>
               <p className="text-sm text-gray-600 mb-4">
-                To process PDFs, you need a Google Gemini API key. It will be saved locally in your browser.
+                To process PDFs, you need an NVIDIA NIM API key. It will be saved locally in your browser.
               </p>
               <input
                 type="password"
@@ -725,19 +736,19 @@ export default function App() {
                 className="w-full p-3 border border-gray-300 rounded-md mb-4 focus:ring-blue-500 focus:border-blue-500"
               />
               <div className="flex justify-end space-x-3">
-                <button 
-                  onClick={() => setShowApiKeyPrompt(false)} 
+                <button
+                  onClick={() => setShowApiKeyPrompt(false)}
                   className="px-4 py-2 border rounded-md text-gray-700 font-medium hover:bg-gray-50"
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   onClick={() => {
                     if (apiKey.trim()) {
-                      localStorage.setItem('gemini_api_key', apiKey.trim());
+                      localStorage.setItem('nvidia_api_key', apiKey.trim());
                       setShowApiKeyPrompt(false);
                     }
-                  }} 
+                  }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md font-medium hover:bg-blue-700 disabled:bg-blue-300"
                   disabled={!apiKey.trim()}
                 >
@@ -864,7 +875,7 @@ export default function App() {
                   {questions.map(q => {
                     const res = responses[q.id];
                     const isAttempted = (res.status === 'ANSWERED' || res.status === 'ANSWERED_AND_MARKED') && res.answer && res.answer.trim() !== '';
-                    
+
                     let isCorrect = false;
                     let isPartial = false;
                     if (isAttempted) {
@@ -891,13 +902,13 @@ export default function App() {
                         isCorrect = res.answer === q.answer;
                       }
                     }
-                    
+
                     const timeMins = Math.floor((res.timeSpent || 0) / 60);
                     const timeSecs = (res.timeSpent || 0) % 60;
                     const timeStr = `${timeMins}:${timeSecs.toString().padStart(2, '0')}`;
-                    
+
                     const qScore = questionScores[q.id] || 0;
-                    
+
                     return (
                       <tr key={q.id}>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{q.questionNumber}</td>
@@ -927,7 +938,7 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            
+
             <div className="mt-8 flex justify-center space-x-4">
               <button onClick={resetTest} className="bg-blue-600 text-white px-6 py-2 rounded-md font-medium hover:bg-blue-700 shadow-sm">
                 Take Another Test
@@ -944,7 +955,7 @@ export default function App() {
 
   const currentQ = questions[currentQuestionIndex];
   const currentRes = responses[currentQ?.id];
-  
+
   // Group questions by subject and section
   const subjectSections = Array.from(new Set<string>(questions.map(q => `${q.subject}::${q.section}`))).map(str => {
     const [subject, section] = str.split('::');
@@ -985,12 +996,12 @@ export default function App() {
           const isCurrent = currentQ?.subject === subject && currentQ?.section === section;
           // Find the first question of this section to determine the type for the tooltip
           const firstQ = questions.find(q => q.subject === subject && q.section === section);
-          const markingScheme = testType === 'MAIN' 
+          const markingScheme = testType === 'MAIN'
             ? "All Questions: +4, -1, 0"
             : firstQ?.type === 'SINGLE_CORRECT' ? "Single Correct: +3, -1, 0" :
               firstQ?.type === 'MULTIPLE_CORRECT' ? "Multiple Correct: +4, +1, -2, 0" :
-              firstQ?.type === 'NUMERICAL' ? "Numerical: +4, 0 (or +3, -1 for single digit)" :
-              "Matrix Match: +3, -1, 0";
+                firstQ?.type === 'NUMERICAL' ? "Numerical: +4, 0 (or +3, -1 for single digit)" :
+                  "Matrix Match: +3, -1, 0";
           return (
             <button
               key={`${subject}-${section}`}
@@ -1000,8 +1011,8 @@ export default function App() {
               }}
               className={clsx(
                 "px-4 py-2 text-sm font-medium rounded-t-md mx-1 transition-colors whitespace-nowrap flex items-center",
-                isCurrent 
-                  ? "bg-blue-600 text-white" 
+                isCurrent
+                  ? "bg-blue-600 text-white"
                   : "bg-white text-gray-700 hover:bg-gray-200 border border-gray-300 border-b-0"
               )}
             >
@@ -1059,7 +1070,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                Marks: 
+                Marks:
                 {testType === 'MAIN' ? (
                   <><span className="text-green-600 font-bold ml-1">+4</span> / <span className="text-red-600 font-bold">-1</span></>
                 ) : (
@@ -1074,7 +1085,7 @@ export default function App() {
               <button className="flex items-center text-blue-600 hover:underline mr-4">
                 <Bookmark className="w-4 h-4 mr-1" /> Bookmark
               </button>
-              <button 
+              <button
                 onClick={() => setShowPalette(!showPalette)}
                 className="flex items-center text-gray-600 hover:text-gray-900 bg-gray-200 px-2 py-1 rounded-md transition-colors"
                 title={showPalette ? "Hide Question Palette" : "Show Question Palette"}
@@ -1214,7 +1225,7 @@ export default function App() {
               <div className="bg-blue-100 text-blue-800 font-bold py-2 px-3 rounded-md mb-4 text-sm">
                 {currentQ?.subject} - {currentQ?.section}
               </div>
-              
+
               <div className="grid grid-cols-4 gap-3">
                 {questions.filter(q => q.subject === currentQ?.subject && q.section === currentQ?.section).map(q => {
                   const status = responses[q.id]?.status || 'NOT_VISITED';
